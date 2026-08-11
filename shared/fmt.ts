@@ -47,6 +47,64 @@ export interface ZoneSample {
   offMin: number; // UTC offset in signed minutes
 }
 
+type ZoneSampleScanner = (formatted: string, timestamp: number, out: ZoneSample) => void;
+
+// Scanner validity is per formatter: measure the runtime's exact field layout
+// once, then use format() on later reads. null permanently selects the
+// formatToParts() fallback for layouts this fast path does not understand.
+const scannerOf = /*@__PURE__*/ new WeakMap<Intl.DateTimeFormat, ZoneSampleScanner | null>();
+
+function makeZoneSampleScanner(parts: Intl.DateTimeFormatPart[], formatted: string, timestamp: number, expected: ZoneSample): ZoneSampleScanner | null {
+  const types = parts.map((part) => part.type).join(',');
+  const withSecond = types === 'month,literal,day,literal,year,literal,hour,literal,minute,literal,second,literal,timeZoneName';
+  const withoutSecond = types === 'month,literal,day,literal,year,literal,hour,literal,minute,literal,timeZoneName';
+
+  if (
+    (!withSecond && !withoutSecond)
+    || parts.map((part) => part.value).join('') !== formatted
+    || parts[1]?.value !== '/'
+    || parts[3]?.value !== '/'
+    || parts[5]?.value !== ', '
+    || parts[7]?.value !== ':'
+    || (withSecond && (parts[9]?.value !== ':' || parts[11]?.value !== ' '))
+    || (withoutSecond && parts[9]?.value !== ' ')
+  ) {
+    return null;
+  }
+
+  const scanner: ZoneSampleScanner = (value, ts, out) => {
+    let i = 0;
+    let code = 0;
+    let month = 0;
+    let day = 0;
+    let year = 0;
+    let hour = 0;
+    let minute = 0;
+    let second = 0;
+
+    while ((code = value.charCodeAt(i++)) !== 47) month = month * 10 + code - 48; // /
+    while ((code = value.charCodeAt(i++)) !== 47) day = day * 10 + code - 48; // /
+    while ((code = value.charCodeAt(i++)) !== 44) year = year * 10 + code - 48; // ,
+    i++; // space
+    while ((code = value.charCodeAt(i++)) !== 58) hour = hour * 10 + code - 48; // :
+
+    if (withSecond) {
+      while ((code = value.charCodeAt(i++)) !== 58) minute = minute * 10 + code - 48; // :
+      while ((code = value.charCodeAt(i++)) !== 32) second = second * 10 + code - 48; // space
+    } else {
+      while ((code = value.charCodeAt(i++)) !== 32) minute = minute * 10 + code - 48; // space
+    }
+
+    out.longName = value.slice(i);
+    out.offMin = Math.round((Date.UTC(year, month - 1, day, hour, minute, second) - ts) / 60_000);
+  };
+
+  const actual: ZoneSample = { longName: '', offMin: 0 };
+  scanner(formatted, timestamp, actual);
+
+  return actual.longName === expected.longName && actual.offMin === expected.offMin ? scanner : null;
+}
+
 // Reads one instant's zone-local wall clock out of `fmt` and reduces it to the
 // only two things anyone wants from it: the CLDR long name and the offset,
 // derived arithmetically from the difference between the wall clock and the
@@ -64,10 +122,32 @@ export interface ZoneSample {
 // subtraction cancels the sub-minute remainder of `timestamp` instead of
 // rounding it into the offset.
 export function readZoneSample(fmt: Intl.DateTimeFormat, timestamp: number, out: ZoneSample): void {
+  const scanner = scannerOf.get(fmt);
+
+  if (scanner !== undefined) {
+    if (scanner === null) {
+      readZoneSampleParts(fmt, timestamp, out);
+    } else {
+      scanner(fmt.format(timestamp), timestamp, out);
+    }
+
+    return;
+  }
+
+  const parts = fmt.formatToParts(timestamp);
+  readZoneSamplePartsArray(parts, timestamp, out);
+  scannerOf.set(fmt, makeZoneSampleScanner(parts, fmt.format(timestamp), timestamp, out));
+}
+
+function readZoneSampleParts(fmt: Intl.DateTimeFormat, timestamp: number, out: ZoneSample): void {
+  readZoneSamplePartsArray(fmt.formatToParts(timestamp), timestamp, out);
+}
+
+function readZoneSamplePartsArray(parts: Intl.DateTimeFormatPart[], timestamp: number, out: ZoneSample): void {
   let year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
   let longName = '';
 
-  for (const p of fmt.formatToParts(timestamp)) {
+  for (const p of parts) {
     switch (p.type) {
       case 'year': year = +p.value; break;
       case 'month': month = +p.value; break;

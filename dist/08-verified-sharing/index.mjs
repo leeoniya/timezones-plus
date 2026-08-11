@@ -284,10 +284,69 @@ var WALL_CLOCK_FIELDS = {
   hourCycle: "h23",
   timeZoneName: "long"
 };
+var scannerOf = /* @__PURE__ */ new WeakMap;
+function makeZoneSampleScanner(parts, formatted, timestamp, expected) {
+  const types = parts.map((part) => part.type).join(",");
+  const withSecond = types === "month,literal,day,literal,year,literal,hour,literal,minute,literal,second,literal,timeZoneName";
+  const withoutSecond = types === "month,literal,day,literal,year,literal,hour,literal,minute,literal,timeZoneName";
+  if (!withSecond && !withoutSecond || parts.map((part) => part.value).join("") !== formatted || parts[1]?.value !== "/" || parts[3]?.value !== "/" || parts[5]?.value !== ", " || parts[7]?.value !== ":" || withSecond && (parts[9]?.value !== ":" || parts[11]?.value !== " ") || withoutSecond && parts[9]?.value !== " ") {
+    return null;
+  }
+  const scanner = (value, ts, out) => {
+    let i = 0;
+    let code = 0;
+    let month = 0;
+    let day = 0;
+    let year = 0;
+    let hour = 0;
+    let minute = 0;
+    let second = 0;
+    while ((code = value.charCodeAt(i++)) !== 47)
+      month = month * 10 + code - 48;
+    while ((code = value.charCodeAt(i++)) !== 47)
+      day = day * 10 + code - 48;
+    while ((code = value.charCodeAt(i++)) !== 44)
+      year = year * 10 + code - 48;
+    i++;
+    while ((code = value.charCodeAt(i++)) !== 58)
+      hour = hour * 10 + code - 48;
+    if (withSecond) {
+      while ((code = value.charCodeAt(i++)) !== 58)
+        minute = minute * 10 + code - 48;
+      while ((code = value.charCodeAt(i++)) !== 32)
+        second = second * 10 + code - 48;
+    } else {
+      while ((code = value.charCodeAt(i++)) !== 32)
+        minute = minute * 10 + code - 48;
+    }
+    out.longName = value.slice(i);
+    out.offMin = Math.round((Date.UTC(year, month - 1, day, hour, minute, second) - ts) / 60000);
+  };
+  const actual = { longName: "", offMin: 0 };
+  scanner(formatted, timestamp, actual);
+  return actual.longName === expected.longName && actual.offMin === expected.offMin ? scanner : null;
+}
 function readZoneSample(fmt, timestamp, out) {
+  const scanner = scannerOf.get(fmt);
+  if (scanner !== undefined) {
+    if (scanner === null) {
+      readZoneSampleParts(fmt, timestamp, out);
+    } else {
+      scanner(fmt.format(timestamp), timestamp, out);
+    }
+    return;
+  }
+  const parts = fmt.formatToParts(timestamp);
+  readZoneSamplePartsArray(parts, timestamp, out);
+  scannerOf.set(fmt, makeZoneSampleScanner(parts, fmt.format(timestamp), timestamp, out));
+}
+function readZoneSampleParts(fmt, timestamp, out) {
+  readZoneSamplePartsArray(fmt.formatToParts(timestamp), timestamp, out);
+}
+function readZoneSamplePartsArray(parts, timestamp, out) {
   let year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
   let longName = "";
-  for (const p of fmt.formatToParts(timestamp)) {
+  for (const p of parts) {
     switch (p.type) {
       case "year":
         year = +p.value;

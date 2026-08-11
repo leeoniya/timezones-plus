@@ -96,6 +96,33 @@ const normal: { label: string; zone: string; ts: number }[] = [
   { label: 'Australia/Sydney summer 2015 (AEDT)', zone: 'Australia/Sydney', ts: Date.UTC(2015, 0, 15, 0) },
 ];
 
+// Stable historical transitions with shapes that are easy for a sampled
+// history generator to miss: Boa Vista changed and returned within one week,
+// while Apia skipped an entire civil day by jumping across the date line.
+const unusualEdges: { label: string; zone: string; ts: number; before: number; after: number }[] = [
+  { label: 'Boa Vista starts its one-week DST experiment', zone: 'America/Boa_Vista', ts: Date.UTC(2000, 9, 8, 4), before: -240, after: -180 },
+  { label: 'Boa Vista ends its one-week DST experiment', zone: 'America/Boa_Vista', ts: Date.UTC(2000, 9, 15, 3), before: -180, after: -240 },
+  { label: 'Apia skips 2011-12-30 across the date line', zone: 'Pacific/Apia', ts: Date.UTC(2011, 11, 30, 10), before: -600, after: 840 },
+];
+
+describe('unusual historical transition boundaries are exact', () => {
+  for (const { label, zone, ts, before, after } of unusualEdges) {
+    test(`${label}: shipped tables flip at the exact instant`, () => {
+      for (const off of [bakedOff, auditedOff]) {
+        expect(off(zone, ts - 1)).toBe(before);
+        expect(off(zone, ts)).toBe(after);
+      }
+    });
+
+    testIfAligned(`${label}: shipped tables match live ICU`, () => {
+      expect(bakedOff(zone, ts - 1)).toBe(icuOff(zone, ts - 1));
+      expect(bakedOff(zone, ts)).toBe(icuOff(zone, ts));
+      expect(auditedOff(zone, ts - 1)).toBe(icuOff(zone, ts - 1));
+      expect(auditedOff(zone, ts)).toBe(icuOff(zone, ts));
+    });
+  }
+});
+
 describe('history eras fix offsets 0.1.1 projected wrong', () => {
   for (const { label, zone, ts } of tricky) {
     testIfAligned(label, () => {
